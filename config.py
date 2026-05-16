@@ -151,7 +151,27 @@ class RerankerConfig:
     # Score threshold — chunks below this are dropped even if in top_n
     score_threshold: float = float(os.getenv("RERANKER_THRESHOLD", "-5.0"))
 
-
+@dataclass
+class GeneratorConfig:
+    # Groq API (reuses same key as query optimizer)
+    groq_api_key: str | None = os.getenv("GROQ_API_KEY", None)
+    model: str    = os.getenv("GENERATOR_MODEL", "llama-3.3-70b-versatile")
+    timeout: int  = int(os.getenv("GENERATOR_TIMEOUT", "60"))
+ 
+    # Generation parameters
+    max_tokens: int    = int(os.getenv("GENERATOR_MAX_TOKENS", "1024"))
+    temperature: float = float(os.getenv("GENERATOR_TEMPERATURE", "0.2"))  # Low = factual
+    stream: bool       = os.getenv("GENERATOR_STREAM", "true").lower() == "true"
+ 
+    # Context assembly
+    max_context_chunks: int = int(os.getenv("MAX_CONTEXT_CHUNKS", "5"))   # Top N chunks to inject
+    max_chunk_tokens: int   = int(os.getenv("MAX_CHUNK_TOKENS", "400"))   # Truncate each chunk
+ 
+    # Grounding
+    # If best chunk score is below this, refuse to answer (no hallucination)
+    min_confidence_score: float = float(os.getenv("MIN_CONFIDENCE_SCORE", "-3.0"))
+ 
+ 
 
 # ── Singletons — import these across all modules ──────────────
  
@@ -165,3 +185,4 @@ FUSION          = FusionConfig()
 CACHE           = CacheConfig()
 QUERY_OPTIMIZER = QueryOptimizerConfig()
 RERANKER = RerankerConfig()
+GENERATOR = GeneratorConfig()
