@@ -55,19 +55,19 @@ def _split_into_sentences(text: str) -> list[str]:
     Split text into sentences.
     Prefers spaCy if available; falls back to regex.
     """
-    try:
-        import spacy
-        # Load smallest English model — just for sentence boundaries
-        try:
-            nlp = spacy.load("en_core_web_sm", disable=["ner", "tagger", "lemmatizer"])
-        except OSError:
-            # Model not downloaded — use sentencizer component only
-            nlp = spacy.blank("en")
-            nlp.add_pipe("sentencizer")
-        doc = nlp(text)
-        return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
-    except ImportError:
-        pass
+    # try:
+    #     import spacy
+    #     # Load smallest English model — just for sentence boundaries
+    #     try:
+    #         nlp = spacy.load("en_core_web_sm", disable=["ner", "tagger", "lemmatizer"])
+    #     except OSError:
+    #         # Model not downloaded — use sentencizer component only
+    #         nlp = spacy.blank("en")
+    #         nlp.add_pipe("sentencizer")
+    #     doc = nlp(text)
+    #     return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+    # except ImportError:
+    #     pass
 
     # Regex fallback: split on sentence-ending punctuation
     import re
