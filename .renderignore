@@ -1,0 +1,6 @@
+storage/
+.venv/
+__pycache__/
+*.pkl
+*.json
+.env

@@ -1,38 +1,54 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
 
-# Virtual Environments
-.venv/
-venv/
-ENV/
-env/
-
-# IDEs and Editors
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Environment variables
+# ── Environment ───────────────────────────────────────────────
 .env
 .env.local
-.env.*
+.env.production
 
-# Local data and models
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# ── Storage (runtime data — never commit) ────────────────────
+storage/transcripts/
+storage/cleaned/
+storage/chunks/
+storage/embeddings/
+storage/bm25_index/
+storage/qdrant_data/
+storage/redis_data/
+
+# ── Model cache (downloaded at runtime) ──────────────────────
+.cache/
 models/
-storage/
-bm25_index/
+*.pkl
+*.bin
+*.safetensors
 
-# OS generated files
+# ── IDE ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ── OS ────────────────────────────────────────────────────────
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
+desktop.ini
 
-# Logs
+# ── Testing ───────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Logs ──────────────────────────────────────────────────────
 *.log
+logs/
