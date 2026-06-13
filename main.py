@@ -1,13 +1,13 @@
 """
 main.py — YouTube RAG Pipeline CLI
 =====================================
-Stages 1-9: transcript → clean → chunk → embed → vector store → cache
-            → query optimization → re-ranking → LLM generation
-
-  python main.py index  <youtube_url>   — Run full ingestion pipeline
-  python main.py query  "<question>"    — Full RAG query with streaming answer
-  python main.py stats                  — Show all layer statistics
-  python main.py cache-flush            — Flush all Redis cache keys
+Stages 1-9 + Overview route
+ 
+  python main.py index    <youtube_url>   — Run full ingestion pipeline
+  python main.py query    "<question>"    — Auto-routed RAG query
+  python main.py overview "<question>"    — Force overview/summary route
+  python main.py stats                    — Show all layer statistics
+  python main.py cache-flush              — Flush all Redis cache keys
 """
 
 import sys
@@ -51,7 +51,9 @@ def get_bm25_store() -> BM25Store:
     global _bm25_store
     if _bm25_store is None:
         _bm25_store = BM25Store()
-        _bm25_store.load()
+        # Pass qdrant client so BM25 auto-rebuilds from Qdrant
+        # if pickle is missing (e.g. on Render free tier restarts)
+        _bm25_store.load(qdrant_client=get_client())
     return _bm25_store
 
 
@@ -368,20 +370,18 @@ def _print_cached_result(question: str, cached: dict) -> None:
     print(f"\n{'='*60}")
     print(f"Q: {question}  [CACHED]")
     print(f"{'='*60}\n")
+    print(cached.get("answer", ""))
+    if cached.get("citations"):
+        print("\n── Sources ──────────────────────────────────────────")
+        for c in cached["citations"]:
+            print(
+                f"[Source {c['index']}] {c['video_title']} | {c['channel']}\n"
+                f"           {c['timestamp_label']} → {c['url_with_timestamp']}"
+            )
+    elif cached.get("is_overview") and cached.get("video_title"):
+        print(f"\n── Video ─────────────────────────────────────────────")
+        print(f"   {cached['video_title']} | {cached['channel']}")
 
-    if "answer" in cached:
-        # Full generated answer cached
-        print(cached["answer"])
-        if cached.get("citations"):
-            print("\n── Sources ──────────────────────────────────────────")
-            for c in cached["citations"]:
-                print(
-                    f"[Source {c['index']}] {c['video_title']} | {c['channel']}\n"
-                    f"           {c['timestamp_label']} → {c['url_with_timestamp']}"
-                )
-    else:
-        # Legacy: raw retrieval results cached (no generate step)
-        _print_raw_results(question, cached)
 
 
 def _print_raw_results(question: str, ranked) -> None:
@@ -396,18 +396,6 @@ def _print_raw_results(question: str, ranked) -> None:
             print(f"   {p.video_title} | {p.channel}")
             print(f"   {p.timestamp_label} → {p.video_url}?t={int(p.timestamp_start)}")
             print(f"   {p.chunk_text[:200]}...")
-        print()
-
-def _print_raw_results(question: str, ranked) -> None:
-    print(f"\n{'='*60}")
-    print(f"Q: {question}  [RAW RETRIEVAL — no LLM]")
-    print(f"{'='*60}\n")
-    for i, r in enumerate(ranked, 1):
-        p = r.payload
-        print(f"#{i} rerank={r.rerank_score:.3f} (was #{r.retrieval_rank})")
-        print(f"   {p.video_title} | {p.channel}")
-        print(f"   {p.timestamp_label} → {p.video_url}?t={int(p.timestamp_start)}")
-        print(f"   {p.chunk_text[:200]}...")
         print()
 
 # ── Stats ─────────────────────────────────────────────────────
@@ -458,51 +446,43 @@ def cmd_cache_flush() -> None:
     deleted = get_cache().flush()
     print(f"✓ Flushed {deleted} cache keys.")
 
-
+ 
 # ── CLI ───────────────────────────────────────────────────────
-
+ 
 def print_help():
     print("""
-YouTube RAG Chatbot — Stages 1-9
-
+YouTube RAG Chatbot — Stages 1-9 + Overview Route
+ 
 Usage:
-  python main.py index  <youtube_url>  [--reindex] [--whisper]
-  python main.py query  "<question>"   [--top_k=20] [--top_n=5]
-                                       [--channel=X] [--video=ID]
-                                       [--no-cache] [--no-optimize]
-                                       [--no-rerank] [--no-generate]
-                                       [--no-stream]
+  python main.py index    <youtube_url>  [--reindex] [--whisper]
+  python main.py query    "<question>"   [--top_k=20] [--top_n=5]
+                                         [--channel=X] [--video=ID]
+                                         [--no-cache] [--no-optimize]
+                                         [--no-rerank] [--no-generate]
+                                         [--no-stream] [--overview] [--specific]
   python main.py overview "<question>"   [--video=ID] [--channel=X]
                                          [--no-cache] [--no-stream]
   python main.py stats
   python main.py cache-flush
-
+ 
 Routing (query command):
   Auto-detects overview vs specific questions.
   --overview   Force overview route (full transcript context)
   --specific   Force specific RAG route (chunk retrieval)
-
+ 
 Overview route is used for:
   "What is this video about?", "Summarize", "What topics are covered?"
   "What problems are solved?", "Main takeaways", etc.
-Query flags:
-  --top_k=N      Retrieval candidates before reranking (default: 20)
-  --top_n=N      Chunks sent to LLM after reranking (default: 5)
-  --no-stream    Return full answer at once instead of streaming
-  --no-generate  Skip LLM, show raw retrieval results only
-  --no-rerank    Skip Stage 8 re-ranker
-  --no-optimize  Skip Stage 7 query optimization
-  --no-cache     Bypass cache for this query
 """)
-
-
+ 
+ 
 if __name__ == "__main__":
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help"):
         print_help(); sys.exit(0)
-
+ 
     command = args[0]
-
+ 
     if command == "index":
         if len(args) < 2:
             print("Error: provide a YouTube URL"); sys.exit(1)
@@ -511,7 +491,7 @@ if __name__ == "__main__":
             force_reindex="--reindex" in args,
             force_whisper="--whisper" in args,
         )
-
+ 
     elif command == "query":
         if len(args) < 2:
             print("Error: provide a question"); sys.exit(1)
@@ -529,7 +509,7 @@ if __name__ == "__main__":
             force_overview="--overview" in args,
             force_specific="--specific" in args,
         )
-
+ 
     elif command == "overview":
         if len(args) < 2:
             print("Error: provide a question"); sys.exit(1)
@@ -540,12 +520,12 @@ if __name__ == "__main__":
             no_cache="--no-cache" in args,
             stream="--no-stream" not in args,
         )
-
+ 
     elif command == "stats":
         cmd_stats()
-
+ 
     elif command == "cache-flush":
         cmd_cache_flush()
-
+ 
     else:
         print(f"Unknown command: {command}"); print_help(); sys.exit(1)

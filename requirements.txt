@@ -1,0 +1,34 @@
+# ── Core API ──────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic
+
+# ── Transcript ────────────────────────────────────────────────
+yt-dlp
+faster-whisper
+
+# ── Cleaning ──────────────────────────────────────────────────
+# deepmultilingualpunctuation  # Optional — heavy, disable on Render
+
+# ── Chunking ──────────────────────────────────────────────────
+tiktoken
+
+# ── Embeddings ────────────────────────────────────────────────
+# sentence-transformers  # Only needed for local backend
+# torch                  # Only needed for local backend
+groq                     # Groq SDK — used for reranking and LLM generation
+voyageai                 # Voyage AI SDK — used for embeddings
+
+# ── Vector Store ──────────────────────────────────────────────
+qdrant-client
+
+# ── BM25 ──────────────────────────────────────────────────────
+nltk
+
+# ── Cache ─────────────────────────────────────────────────────
+redis
+msgpack
+
+# ── Utils ─────────────────────────────────────────────────────
+tqdm

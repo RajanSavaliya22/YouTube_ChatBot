@@ -149,7 +149,7 @@ in-memory and do not require Qdrant to be running.
 
 ## Next Stages (not yet implemented)
 
-- **Stage 6**: Re-ranker (`BAAI/bge-reranker-large`)
+- **Stage 6**: Re-ranker (`BAAI/bge-reranker-base`)
 - **Stage 7**: Query optimization (HyDE, multi-query expansion, sub-questions)
 - **Stage 8**: LLM generation with timestamp citations (Llama 3.1 via vLLM)
 - **Stage 9**: Redis caching layer

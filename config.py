@@ -31,14 +31,18 @@ class ChunkingConfig:
 
 # ── Stage 4: Embeddings ───────────────────────────────────────
 
+ 
 @dataclass
 class EmbeddingConfig:
-    model_name: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5")
+    # Backend: "local" (sentence-transformers) | "groq" (API, no RAM cost)
+    backend: str    = os.getenv("EMBEDDER_BACKEND", "local")
+    model_name: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
     batch_size: int = int(os.getenv("EMBED_BATCH_SIZE", "64"))
-    device: str = os.getenv("EMBED_DEVICE", "cpu")  # "cuda" if GPU available
-    cache_folder=os.getenv("MODELS_PATH", "./models")
+    device: str     = os.getenv("EMBED_DEVICE", "cpu")
     query_prefix: str = "Represent this sentence for searching relevant passages: "
-
+    # Voyage AI embedding settings
+    voyage_model: str = os.getenv("VOYAGE_EMBED_MODEL", "voyage-4-lite")
+    voyage_batch: int = int(os.getenv("VOYAGE_EMBED_BATCH", "128"))
 # ── Stage 5: Vector Store — Qdrant ───────────────────────────
 
 @dataclass
@@ -141,15 +145,17 @@ class QueryOptimizerConfig:
 
 @dataclass
 class RerankerConfig:
-    model_name: str  = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-large")
-    device: str      = os.getenv("RERANKER_DEVICE", "cpu")   # cpu / cuda
-    top_n: int       = int(os.getenv("RERANKER_TOP_N", "5"))  # chunks kept after reranking
+    # Backend: "local" (cross-encoder) | "voyage" (API, no RAM cost)
+    backend: str     = os.getenv("RERANKER_BACKEND", "local")
+    model_name: str  = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
+    device: str      = os.getenv("RERANKER_DEVICE", "cpu")
+    top_n: int       = int(os.getenv("RERANKER_TOP_N", "5"))
     batch_size: int  = int(os.getenv("RERANKER_BATCH_SIZE", "32"))
     enabled: bool    = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
-    cache_folder: str    = os.getenv("RERANKER_MODELS_PATH", "./models")
-
-    # Score threshold — chunks below this are dropped even if in top_n
     score_threshold: float = float(os.getenv("RERANKER_THRESHOLD", "-5.0"))
+    # Voyage reranking settings
+    voyage_rerank_model: str = os.getenv("VOYAGE_RERANK_MODEL", "rerank-2.5")
+
 
 @dataclass
 class GeneratorConfig:

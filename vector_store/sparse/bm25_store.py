@@ -138,29 +138,39 @@ class BM25Store:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
         logger.info(f"BM25 store saved → {self._index_path} ({self.index.num_docs} docs)")
 
-    def load(self) -> bool:
+    def load(self, qdrant_client=None) -> bool:
         """
         Load store from disk.
+        If no pickle found AND qdrant_client is provided, rebuilds from Qdrant.
+
+        Args:
+            qdrant_client: Optional connected QdrantClient for auto-rebuild.
+                           Pass this on Render/cloud where filesystem is ephemeral.
 
         Returns:
-            True if loaded from disk, False if no file found (new store).
+            True if loaded or rebuilt, False if empty start.
         """
-        if not self._index_path.exists():
-            logger.info("No BM25 index on disk — starting fresh.")
-            return False
+        if self._index_path.exists():
+            with open(self._index_path, "rb") as f:
+                data = pickle.load(f)
+            self.index = data["index"]
+            self._payload_map = data["payload_map"]
+            self._video_chunks = data["video_chunks"]
+            logger.info(
+                f"BM25 store loaded from {self._index_path} "
+                f"({self.index.num_docs} docs, vocab={len(self.index.inverted_index)})"
+            )
+            return True
 
-        with open(self._index_path, "rb") as f:
-            data = pickle.load(f)
+        # No pickle on disk
+        if qdrant_client is not None:
+            logger.info("No BM25 pickle found — rebuilding from Qdrant...")
+            from vector_store.sparse.bm25_rebuild import rebuild_from_qdrant
+            count = rebuild_from_qdrant(self, qdrant_client)
+            return count > 0
 
-        self.index = data["index"]
-        self._payload_map = data["payload_map"]
-        self._video_chunks = data["video_chunks"]
-
-        logger.info(
-            f"BM25 store loaded from {self._index_path} "
-            f"({self.index.num_docs} docs, vocab={len(self.index.inverted_index)})"
-        )
-        return True
+        logger.info("No BM25 index on disk — starting fresh.")
+        return False
 
     # ─── Stats ────────────────────────────────────────────────────
 
@@ -170,3 +180,4 @@ class BM25Store:
             "indexed_videos": len(self._video_chunks),
             "payload_entries": len(self._payload_map),
         }
+    
