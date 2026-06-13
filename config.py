@@ -177,6 +177,19 @@ class GeneratorConfig:
     # If best chunk score is below this, refuse to answer (no hallucination)
     min_confidence_score: float = float(os.getenv("MIN_CONFIDENCE_SCORE", "-3.0"))
  
+
+# ── Stage 10: API ─────────────────────────────────────────────
+
+@dataclass
+class APIConfig:
+    host: str = os.getenv("API_HOST", "0.0.0.0")
+    port: int = int(os.getenv("API_PORT", "8000"))
+    api_key: str | None = os.getenv("API_KEY", None)
+    cors_origins: list = None
+
+    def __post_init__(self):
+        raw = os.getenv("CORS_ORIGINS", "*")
+        self.cors_origins = [o.strip() for o in raw.split(",") if o.strip()]
  
 
 # ── Singletons — import these across all modules ──────────────
@@ -192,3 +205,4 @@ CACHE           = CacheConfig()
 QUERY_OPTIMIZER = QueryOptimizerConfig()
 RERANKER = RerankerConfig()
 GENERATOR = GeneratorConfig()
+API             = APIConfig()
