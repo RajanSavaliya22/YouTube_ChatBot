@@ -5,8 +5,11 @@ python-dotenv
 pydantic
 
 # ── Transcript ────────────────────────────────────────────────
-yt-dlp
-faster-whisper
+yt-dlp                   # Audio download + local caption fallback
+youtube-transcript-api   # Cloud-safe caption fetching (primary)
+pytubefix                # Metadata fetching (cloud-safe)
+faster-whisper           # Whisper transcription (no-captions fallback)
+ 
 
 # ── Cleaning ──────────────────────────────────────────────────
 # deepmultilingualpunctuation  # Optional — heavy, disable on Render

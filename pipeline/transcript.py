@@ -1,11 +1,23 @@
 """
 Stage 1: Transcript Generation
 ================================
-Pulls transcripts from YouTube videos using two strategies:
-  A) yt-dlp  — fetches native YouTube captions (fast, free, no GPU)
-  B) Whisper  — transcribes audio when no captions exist (accurate, slower)
+Fetches transcripts from YouTube videos using a three-tier strategy:
 
-Output: Transcript object saved as JSON to storage/transcripts/{video_id}.json
+  Priority 1 — youtube-transcript-api (fast, no bot detection, no API key)
+                Works on Render/cloud servers. Same caption quality as yt-dlp.
+
+  Priority 2 — yt-dlp native captions (local only, blocked on cloud servers)
+                Falls back to this when youtube-transcript-api fails locally.
+
+  Priority 3 — Whisper (audio transcription, no captions needed)
+                Last resort for videos with no captions at all.
+
+Metadata (title, channel, date) fetched via:
+  1. pytube  (no bot detection)
+  2. yt-dlp  (fallback, local only)
+  3. Minimal fallback using video ID
+
+Output: Transcript JSON saved to storage/transcripts/{video_id}.json
 """
 
 import json
@@ -24,14 +36,12 @@ logger = get_logger("stage1.transcript")
 
 
 # ─────────────────────────────────────────────
-# Helpers
+# Shared helpers
 # ─────────────────────────────────────────────
 
 def _extract_video_id(url: str) -> str:
     """Extract YouTube video ID from any YouTube URL format."""
-    patterns = [
-        r"(?:v=|youtu\.be/|embed/|shorts/)([A-Za-z0-9_-]{11})",
-    ]
+    patterns = [r"(?:v=|youtu\.be/|embed/|shorts/)([A-Za-z0-9_-]{11})"]
     for pattern in patterns:
         match = re.search(pattern, url)
         if match:
@@ -51,44 +61,193 @@ def _seconds_to_float(ts: str) -> float:
     return float(parts[0])
 
 
-def _get_video_metadata(url: str) -> dict:
-    """Fetch video title, channel, publish date via yt-dlp (no download)."""
-    cmd = [
-        "yt-dlp",
-        "--dump-json",
-        "--no-playlist",
-        "--skip-download",
-        url,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp metadata fetch failed: {result.stderr}")
-    info = json.loads(result.stdout)
+# ─────────────────────────────────────────────
+# Metadata fetching
+# ─────────────────────────────────────────────
+
+def _get_metadata_pytube(url: str, video_id: str) -> dict | None:
+    """
+    Fetch video metadata via pytube.
+    Works on cloud servers — no bot detection.
+    """
+    try:
+        from pytubefix import YouTube
+        yt = YouTube(url)
+        title = yt.title or f"Video {video_id}"
+        channel = yt.author or "Unknown"
+        pub_date = ""
+        if yt.publish_date:
+            pub_date = yt.publish_date.strftime("%Y%m%d")
+
+        logger.info(f"Metadata via pytube: '{title}' by {channel}")
+        return {
+            "video_id":       video_id,
+            "video_title":    title,
+            "channel":        channel,
+            "video_url":      f"https://www.youtube.com/watch?v={video_id}",
+            "published_date": pub_date,
+            "language":       "en",
+        }
+    except Exception as e:
+        logger.warning(f"pytube metadata failed: {e}")
+        return None
+
+
+def _get_metadata_ytdlp(url: str) -> dict | None:
+    """
+    Fetch video metadata via yt-dlp --dump-json (no download).
+    Works locally; may be blocked on cloud servers.
+    """
+    try:
+        cmd = [
+            "yt-dlp", "--dump-json",
+            "--no-playlist", "--skip-download", url,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logger.warning(f"yt-dlp metadata failed: {result.stderr[:200]}")
+            return None
+        info = json.loads(result.stdout)
+        logger.info(f"Metadata via yt-dlp: '{info.get('title')}' by {info.get('uploader')}")
+        return {
+            "video_id":       info.get("id", ""),
+            "video_title":    info.get("title", ""),
+            "channel":        info.get("uploader", info.get("channel", "")),
+            "video_url":      info.get("webpage_url", url),
+            "published_date": info.get("upload_date", ""),
+            "language":       info.get("language", "en") or "en",
+        }
+    except Exception as e:
+        logger.warning(f"yt-dlp metadata failed: {e}")
+        return None
+
+
+def _get_video_metadata(url: str, video_id: str) -> dict:
+    """
+    Fetch metadata with fallback chain:
+      pytube → yt-dlp → minimal (video ID only)
+    """
+    meta = _get_metadata_pytube(url, video_id)
+    if meta:
+        return meta
+
+    meta = _get_metadata_ytdlp(url)
+    if meta:
+        return meta
+
+    # Minimal fallback — just the video ID
+    logger.warning(f"All metadata fetchers failed — using minimal fallback for {video_id}")
     return {
-        "video_id": info.get("id", ""),
-        "video_title": info.get("title", ""),
-        "channel": info.get("uploader", info.get("channel", "")),
-        "video_url": info.get("webpage_url", url),
-        "published_date": info.get("upload_date", ""),  # YYYYMMDD
-        "language": info.get("language", "en") or "en",
+        "video_id":       video_id,
+        "video_title":    f"Video {video_id}",
+        "channel":        "Unknown",
+        "video_url":      f"https://www.youtube.com/watch?v={video_id}",
+        "published_date": "",
+        "language":       "en",
     }
 
 
 # ─────────────────────────────────────────────
-# Strategy A: yt-dlp native captions
+# Strategy 1: youtube-transcript-api
+# ─────────────────────────────────────────────
+
+def fetch_youtube_transcript_api(
+    video_id: str,
+    language: str = "en",
+) -> list[TranscriptSegment] | None:
+    """
+    Fetch captions via youtube-transcript-api.
+
+    - No yt-dlp required
+    - Works on Render/cloud servers (no bot detection)
+    - Same caption text as yt-dlp (same YouTube source)
+    - Segment-level timestamps (3-5 second chunks)
+
+    Returns None if no captions available for this video.
+    """
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+    except ImportError:
+        logger.warning("youtube-transcript-api not installed. Run: pip install youtube-transcript-api")
+        return None
+
+    # Try preferred language first, then English variants, then any available
+    lang_priority = [language, "en", "en-US", "en-GB", "en-CA"]
+    lang_priority = list(dict.fromkeys(lang_priority))  # deduplicate
+
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+
+        # Try manually created captions first (higher quality than auto-generated)
+        transcript = None
+        for lang in lang_priority:
+            try:
+                transcript = transcript_list.find_manually_created_transcript([lang])
+                logger.info(f"Found manual captions in '{lang}'")
+                break
+            except Exception:
+                pass
+
+        # Fall back to auto-generated
+        if transcript is None:
+            for lang in lang_priority:
+                try:
+                    transcript = transcript_list.find_generated_transcript([lang])
+                    logger.info(f"Found auto-generated captions in '{lang}'")
+                    break
+                except Exception:
+                    pass
+
+        # Last resort: any available transcript
+        if transcript is None:
+            try:
+                available = list(transcript_list)
+                if available:
+                    transcript = available[0]
+                    logger.info(f"Using available transcript in '{transcript.language_code}'")
+            except Exception:
+                pass
+
+        if transcript is None:
+            logger.info("No transcripts found via youtube-transcript-api.")
+            return None
+
+        entries = transcript.fetch()
+        segments = [
+            TranscriptSegment(
+                start=float(entry["start"]),
+                end=float(entry["start"]) + float(entry.get("duration", 3.0)),
+                text=entry["text"].strip(),
+            )
+            for entry in entries
+            if entry.get("text", "").strip()
+        ]
+
+        logger.info(
+            f"youtube-transcript-api: {len(segments)} segments "
+            f"(manual={not transcript.is_generated})"
+        )
+        return segments
+
+    except Exception as e:
+        logger.warning(f"youtube-transcript-api failed: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────
+# Strategy 2: yt-dlp captions (local fallback)
 # ─────────────────────────────────────────────
 
 def _parse_vtt(vtt_text: str) -> list[TranscriptSegment]:
     """Parse WebVTT caption file into TranscriptSegment list."""
     segments = []
-    # Match cue blocks: timestamp --> timestamp \n text
     cue_pattern = re.compile(
         r"(\d{2}:\d{2}:\d{2}\.\d+)\s+-->\s+(\d{2}:\d{2}:\d{2}\.\d+)[^\n]*\n(.*?)(?=\n\n|\Z)",
         re.DOTALL,
     )
     for match in cue_pattern.finditer(vtt_text):
         start_str, end_str, raw_text = match.groups()
-        text = re.sub(r"<[^>]+>", "", raw_text).strip()  # Strip HTML tags
+        text = re.sub(r"<[^>]+>", "", raw_text).strip()
         text = re.sub(r"\n", " ", text).strip()
         if text:
             segments.append(TranscriptSegment(
@@ -99,45 +258,48 @@ def _parse_vtt(vtt_text: str) -> list[TranscriptSegment]:
     return segments
 
 
-def fetch_native_captions(url: str, language: str = "en") -> list[TranscriptSegment] | None:
+def fetch_ytdlp_captions(
+    url: str,
+    language: str = "en",
+) -> list[TranscriptSegment] | None:
     """
-    Download auto-generated or manual captions via yt-dlp.
-    Returns None if no captions are available.
+    Download captions via yt-dlp.
+    Works locally. Blocked on cloud servers by YouTube bot detection.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cmd = [
-            "yt-dlp",
-            "--write-auto-subs",
-            "--write-subs",
-            "--sub-lang", language,
-            "--sub-format", "vtt",
-            "--skip-download",
-            "--no-playlist",
-            "-o", os.path.join(tmpdir, "%(id)s.%(ext)s"),
-            url,
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        # Find the downloaded .vtt file
-        vtt_files = list(Path(tmpdir).glob("*.vtt"))
-        if not vtt_files:
-            logger.info("No native captions found.")
-            return None
-
-        vtt_text = vtt_files[0].read_text(encoding="utf-8")
-        segments = _parse_vtt(vtt_text)
-        logger.info(f"Parsed {len(segments)} caption segments from native captions.")
-        return segments
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cmd = [
+                "yt-dlp",
+                "--write-auto-subs", "--write-subs",
+                "--sub-lang", language,
+                "--sub-format", "vtt",
+                "--skip-download", "--no-playlist",
+                "-o", os.path.join(tmpdir, "%(id)s.%(ext)s"),
+                url,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            vtt_files = list(Path(tmpdir).glob("*.vtt"))
+            if not vtt_files:
+                logger.info("yt-dlp: no caption files found.")
+                return None
+            vtt_text = vtt_files[0].read_text(encoding="utf-8")
+            segments = _parse_vtt(vtt_text)
+            logger.info(f"yt-dlp: parsed {len(segments)} caption segments.")
+            return segments
+    except Exception as e:
+        logger.warning(f"yt-dlp captions failed: {e}")
+        return None
 
 
 # ─────────────────────────────────────────────
-# Strategy B: Whisper transcription
+# Strategy 3: Whisper (no captions fallback)
 # ─────────────────────────────────────────────
 
 def fetch_whisper_transcript(url: str) -> list[TranscriptSegment]:
     """
     Download audio and transcribe with faster-whisper.
-    Used as fallback when native captions are unavailable.
+    Last resort for videos with no captions available.
+    Requires yt-dlp for audio download — may fail on Render.
     """
     try:
         from faster_whisper import WhisperModel
@@ -146,20 +308,14 @@ def fetch_whisper_transcript(url: str) -> list[TranscriptSegment]:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         audio_path = os.path.join(tmpdir, "audio.mp3")
-
-        # Download audio only
         cmd = [
-            "yt-dlp",
-            "--extract-audio",
-            "--audio-format", "mp3",
-            "--audio-quality", "0",
-            "--no-playlist",
-            "-o", audio_path,
-            url,
+            "yt-dlp", "--extract-audio",
+            "--audio-format", "mp3", "--audio-quality", "0",
+            "--no-playlist", "-o", audio_path, url,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            raise RuntimeError(f"Audio download failed: {result.stderr}")
+            raise RuntimeError(f"Audio download failed: {result.stderr[:300]}")
 
         logger.info(f"Transcribing with Whisper ({TRANSCRIPT.whisper_model})...")
         model = WhisperModel(
@@ -167,26 +323,18 @@ def fetch_whisper_transcript(url: str) -> list[TranscriptSegment]:
             device=TRANSCRIPT.whisper_device,
             compute_type=TRANSCRIPT.whisper_compute_type,
         )
-
         whisper_segments, info = model.transcribe(
             audio_path,
             beam_size=5,
             word_timestamps=False,
-            vad_filter=True,          # Skip silent sections
+            vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=500),
         )
-
-        segments = []
-        for seg in whisper_segments:
-            text = seg.text.strip()
-            if text:
-                segments.append(TranscriptSegment(
-                    start=seg.start,
-                    end=seg.end,
-                    text=text,
-                ))
-
-        logger.info(f"Whisper produced {len(segments)} segments. Language: {info.language}")
+        segments = [
+            TranscriptSegment(start=seg.start, end=seg.end, text=seg.text.strip())
+            for seg in whisper_segments if seg.text.strip()
+        ]
+        logger.info(f"Whisper: {len(segments)} segments. Language detected: {info.language}")
         return segments
 
 
@@ -197,41 +345,51 @@ def fetch_whisper_transcript(url: str) -> list[TranscriptSegment]:
 @timed("stage1.transcript")
 def get_transcript(url: str, force_whisper: bool = False) -> Transcript:
     """
-    Full transcript generation pipeline for a YouTube URL.
+    Full transcript generation with three-tier fallback strategy.
 
-    Strategy:
-      1. Fetch video metadata (title, channel, date)
-      2. Try native captions via yt-dlp (fast)
-      3. Fall back to Whisper if no captions found or force_whisper=True
+    Order:
+      1. youtube-transcript-api  — cloud-safe, no bot detection
+      2. yt-dlp captions         — local fallback
+      3. Whisper                 — for videos with no captions
 
     Args:
-        url: YouTube video URL
-        force_whisper: Skip native caption check, always use Whisper
+        url:           YouTube video URL
+        force_whisper: Skip caption fetching, always use Whisper
 
     Returns:
         Transcript object with all segments populated
     """
     Path(TRANSCRIPT.output_dir).mkdir(parents=True, exist_ok=True)
 
-    # Check cache
     video_id = _extract_video_id(url)
+
+    # Cache check
     cache_path = Path(TRANSCRIPT.output_dir) / f"{video_id}.json"
     if cache_path.exists():
         logger.info(f"Loading cached transcript for {video_id}")
-        return Transcript.from_dict(json.loads(cache_path.read_text(encoding="utf-8")))
+        return Transcript.from_dict(json.loads(cache_path.read_text()))
 
-    # Fetch metadata
+    # Metadata
     logger.info(f"Fetching metadata for: {url}")
-    meta = _get_video_metadata(url)
+    meta = _get_video_metadata(url, video_id)
     logger.info(f"Video: '{meta['video_title']}' by {meta['channel']}")
 
-    # Get segments
+    # Segments
     segments = None
-    if not force_whisper:
-        segments = fetch_native_captions(url, language=meta["language"])
 
+    if not force_whisper:
+        # Strategy 1: youtube-transcript-api (cloud-safe)
+        logger.info("Trying youtube-transcript-api...")
+        segments = fetch_youtube_transcript_api(video_id, language=meta["language"])
+
+        # Strategy 2: yt-dlp (local fallback)
+        if segments is None:
+            logger.info("Trying yt-dlp captions...")
+            segments = fetch_ytdlp_captions(url, language=meta["language"])
+
+    # Strategy 3: Whisper
     if segments is None:
-        logger.info("Falling back to Whisper transcription...")
+        logger.info("No captions found — falling back to Whisper...")
         segments = fetch_whisper_transcript(url)
 
     transcript = Transcript(
@@ -244,9 +402,8 @@ def get_transcript(url: str, force_whisper: bool = False) -> Transcript:
         segments=segments,
     )
 
-    # Save to disk
-    cache_path.write_text(json.dumps(transcript.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    logger.info(f"Transcript saved: {cache_path}")
+    cache_path.write_text(json.dumps(transcript.to_dict(), ensure_ascii=False, indent=2))
+    logger.info(f"Transcript saved: {cache_path} ({len(segments)} segments)")
 
     return transcript
 
@@ -258,11 +415,10 @@ def get_transcript(url: str, force_whisper: bool = False) -> Transcript:
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
-        print("Usage: python pipeline/transcript.py <youtube_url> [--whisper]")
+        print("Usage: python pipeline/01_transcript.py <youtube_url> [--whisper]")
         sys.exit(1)
-
     url = sys.argv[1]
     force_whisper = "--whisper" in sys.argv
     t = get_transcript(url, force_whisper=force_whisper)
-    print(f"\n✓ Transcript ready: {len(t.segments)} segments, {len(t.full_text)} chars")
+    print(f"\n✓ {len(t.segments)} segments | {len(t.full_text)} chars")
     print(f"  Preview: {t.full_text[:300]}...")
