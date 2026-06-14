@@ -299,8 +299,8 @@ def chunk_transcript(transcript: Transcript) -> list[ChunkPayload]:
 
 if __name__ == "__main__":
     import sys
-    from pipeline.stage01_transcript import get_transcript
-    from pipeline.stage02_cleaner import clean_transcript
+    from pipeline.transcript import get_transcript
+    from pipeline.cleaner import clean_transcript
 
     if len(sys.argv) < 2:
         print("Usage: python pipeline/chunker.py <youtube_url>")

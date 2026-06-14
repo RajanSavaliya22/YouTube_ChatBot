@@ -28,9 +28,9 @@ def _run_pipeline(
     """Full ingestion pipeline run as a background task."""
     _jobs[job_id] = {"status": "running", "step": "transcript", "error": None}
     try:
-        from pipeline.stage01_transcript import get_transcript
-        from pipeline.stage02_cleaner import clean_transcript
-        from pipeline.stage03_chunker import chunk_transcript
+        from pipeline.transcript import get_transcript
+        from pipeline.cleaner import clean_transcript
+        from pipeline.chunker import chunk_transcript
         from vector_store.indexer import upsert_chunks, delete_video, video_is_indexed
         from utils.embedder import embed_texts
 

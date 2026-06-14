@@ -103,9 +103,9 @@ def embed_chunks(
 
 if __name__ == "__main__":
     import sys
-    from pipeline.stage01_transcript import get_transcript
-    from pipeline.stage02_cleaner import clean_transcript
-    from pipeline.stage03_chunker import chunk_transcript
+    from pipeline.transcript import get_transcript
+    from pipeline.cleaner import clean_transcript
+    from pipeline.chunker import chunk_transcript
 
     if len(sys.argv) < 2:
         print("Usage: python pipeline/embedder.py <youtube_url>")
