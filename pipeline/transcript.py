@@ -156,7 +156,7 @@ def fetch_youtube_transcript_api(
     language: str = "en",
 ) -> list[TranscriptSegment] | None:
     """
-    Fetch captions via youtube-transcript-api.
+    Fetch captions via youtube-transcript-api (v1.0+ instance-based API).
 
     - No yt-dlp required
     - Works on Render/cloud servers (no bot detection)
@@ -166,7 +166,7 @@ def fetch_youtube_transcript_api(
     Returns None if no captions available for this video.
     """
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+        from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
         logger.warning("youtube-transcript-api not installed. Run: pip install youtube-transcript-api")
         return None
@@ -176,7 +176,10 @@ def fetch_youtube_transcript_api(
     lang_priority = list(dict.fromkeys(lang_priority))  # deduplicate
 
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # v1.0+ API: instantiate the client, then call .list() (was a static
+        # method `list_transcripts()` in pre-1.0 versions)
+        ytt_api = YouTubeTranscriptApi()
+        transcript_list = ytt_api.list(video_id)
 
         # Try manually created captions first (higher quality than auto-generated)
         transcript = None
@@ -212,15 +215,17 @@ def fetch_youtube_transcript_api(
             logger.info("No transcripts found via youtube-transcript-api.")
             return None
 
-        entries = transcript.fetch()
+        # v1.0+ fetch() returns a FetchedTranscript object with a `.snippets`
+        # list of FetchedTranscriptSnippet objects (attribute access, not dict keys)
+        fetched = transcript.fetch()
         segments = [
             TranscriptSegment(
-                start=float(entry["start"]),
-                end=float(entry["start"]) + float(entry.get("duration", 3.0)),
-                text=entry["text"].strip(),
+                start=float(snippet.start),
+                end=float(snippet.start) + float(snippet.duration or 3.0),
+                text=snippet.text.strip(),
             )
-            for entry in entries
-            if entry.get("text", "").strip()
+            for snippet in fetched.snippets
+            if snippet.text.strip()
         ]
 
         logger.info(
