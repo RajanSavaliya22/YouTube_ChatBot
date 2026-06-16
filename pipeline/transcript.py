@@ -148,6 +148,51 @@ def _get_video_metadata(url: str, video_id: str) -> dict:
 
 
 # ─────────────────────────────────────────────
+# Webshare proxy configuration (works around YouTube's cloud-IP blocking)
+# ─────────────────────────────────────────────
+
+_ytt_client = None  # Singleton — reused across calls so we don't rebuild proxy config every time
+
+
+def _get_ytt_client():
+    """
+    Build (or return cached) YouTubeTranscriptApi client.
+
+    If WEBSHARE_PROXY_USERNAME / WEBSHARE_PROXY_PASSWORD are set, routes all
+    requests through Webshare's residential proxy pool — required on Render
+    and other cloud hosts, since YouTube blocklists most cloud provider IP
+    ranges (AWS, GCP, Azure, Render, Railway, etc.) for transcript/caption
+    requests, even though no API key or download is involved.
+
+    Falls back to a direct (proxy-less) client if credentials are absent —
+    works fine for local development on a residential IP.
+    """
+    global _ytt_client
+    if _ytt_client is not None:
+        return _ytt_client
+
+    from youtube_transcript_api import YouTubeTranscriptApi
+
+    proxy_user = os.getenv("WEBSHARE_PROXY_USERNAME")
+    proxy_pass = os.getenv("WEBSHARE_PROXY_PASSWORD")
+
+    if proxy_user and proxy_pass:
+        from youtube_transcript_api.proxies import WebshareProxyConfig
+        logger.info("youtube-transcript-api: using Webshare proxy (cloud IP workaround)")
+        _ytt_client = YouTubeTranscriptApi(
+            proxy_config=WebshareProxyConfig(
+                proxy_username=proxy_user,
+                proxy_password=proxy_pass,
+            )
+        )
+    else:
+        logger.info("youtube-transcript-api: no proxy configured — using direct connection")
+        _ytt_client = YouTubeTranscriptApi()
+
+    return _ytt_client
+
+
+# ─────────────────────────────────────────────
 # Strategy 1: youtube-transcript-api
 # ─────────────────────────────────────────────
 
@@ -159,14 +204,15 @@ def fetch_youtube_transcript_api(
     Fetch captions via youtube-transcript-api (v1.0+ instance-based API).
 
     - No yt-dlp required
-    - Works on Render/cloud servers (no bot detection)
+    - Works on Render/cloud servers when routed through a Webshare proxy
+      (set WEBSHARE_PROXY_USERNAME / WEBSHARE_PROXY_PASSWORD env vars)
     - Same caption text as yt-dlp (same YouTube source)
     - Segment-level timestamps (3-5 second chunks)
 
     Returns None if no captions available for this video.
     """
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
+        ytt_api = _get_ytt_client()
     except ImportError:
         logger.warning("youtube-transcript-api not installed. Run: pip install youtube-transcript-api")
         return None
@@ -176,9 +222,6 @@ def fetch_youtube_transcript_api(
     lang_priority = list(dict.fromkeys(lang_priority))  # deduplicate
 
     try:
-        # v1.0+ API: instantiate the client, then call .list() (was a static
-        # method `list_transcripts()` in pre-1.0 versions)
-        ytt_api = YouTubeTranscriptApi()
         transcript_list = ytt_api.list(video_id)
 
         # Try manually created captions first (higher quality than auto-generated)
