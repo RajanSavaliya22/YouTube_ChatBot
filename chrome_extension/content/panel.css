@@ -1,6 +1,354 @@
 /**
- * Panel Styles
- * =============
- * Stage: Step 1 — empty placeholder.
- * Full chat panel styling added in Step 5.
+ * Chat Panel Styles
+ * ===================
+ * Stage: Step 5 — Floating chat panel injected into YouTube watch pages.
+ *
+ * Design notes:
+ *  - Fixed position, bottom-right, similar to a typical chat widget
+ *  - Dark theme matching YouTube's dark mode aesthetic
+ *  - z-index high enough to sit above YouTube's own UI layers
+ *  - All classes prefixed `ytrag-` to avoid colliding with YouTube's own CSS
  */
+
+#ytrag-panel {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 380px;
+  height: 520px;
+  background: #0d0f14;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  z-index: 2147483600; /* above YouTube's own overlays */
+  display: flex;
+  flex-direction: column;
+  font-family: "Roboto", -apple-system, system-ui, sans-serif;
+  overflow: hidden;
+  transition: height 0.15s ease, opacity 0.15s ease;
+}
+
+#ytrag-panel.ytrag-collapsed {
+  height: 56px;
+}
+
+#ytrag-panel.ytrag-hidden {
+  display: none;
+}
+
+/* ── Header ─────────────────────────────────────────────── */
+
+.ytrag-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: #161920;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.ytrag-logo-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #8b92a5;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+
+.ytrag-logo-dot.ytrag-ready { background: #22c97a; }
+.ytrag-logo-dot.ytrag-indexing {
+  background: #ffb547;
+  animation: ytrag-pulse 1.2s infinite;
+}
+.ytrag-logo-dot.ytrag-error { background: #ff5c5c; }
+
+@keyframes ytrag-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.ytrag-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #f0f2f7;
+  flex: 1;
+}
+
+.ytrag-status-text {
+  font-size: 11px;
+  color: #8b92a5;
+  margin-right: 4px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ytrag-collapse-btn {
+  background: none;
+  border: none;
+  color: #8b92a5;
+  cursor: pointer;
+  font-size: 16px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.ytrag-collapse-btn:hover {
+  background: rgba(255,255,255,0.08);
+  color: #f0f2f7;
+}
+
+/* ── Body ───────────────────────────────────────────────── */
+
+.ytrag-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#ytrag-panel.ytrag-collapsed .ytrag-body {
+  display: none;
+}
+
+/* ── Indexing banner ────────────────────────────────────── */
+
+.ytrag-indexing-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(255,181,71,0.08);
+  border-bottom: 1px solid rgba(255,181,71,0.15);
+  font-size: 12px;
+  color: #ffb547;
+  flex-shrink: 0;
+}
+
+.ytrag-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,181,71,0.25);
+  border-top-color: #ffb547;
+  border-radius: 50%;
+  animation: ytrag-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes ytrag-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ytrag-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(255,92,92,0.08);
+  border-bottom: 1px solid rgba(255,92,92,0.15);
+  font-size: 12px;
+  color: #ff5c5c;
+  flex-shrink: 0;
+}
+
+/* ── Messages ───────────────────────────────────────────── */
+
+.ytrag-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ytrag-messages::-webkit-scrollbar { width: 6px; }
+.ytrag-messages::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.12);
+  border-radius: 3px;
+}
+
+.ytrag-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: #5a6070;
+  font-size: 12px;
+  gap: 6px;
+  padding: 0 24px;
+}
+
+.ytrag-empty-state strong {
+  color: #8b92a5;
+  font-size: 13px;
+}
+
+.ytrag-msg {
+  max-width: 88%;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 9px 12px;
+  border-radius: 10px;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.ytrag-msg-user {
+  align-self: flex-end;
+  background: #ff4b4b;
+  color: white;
+  border-bottom-right-radius: 3px;
+}
+
+.ytrag-msg-assistant {
+  align-self: flex-start;
+  background: #1e2230;
+  color: #f0f2f7;
+  border-bottom-left-radius: 3px;
+}
+
+.ytrag-msg-assistant.ytrag-streaming::after {
+  content: "▍";
+  animation: ytrag-blink 0.8s steps(1) infinite;
+  color: #ff4b4b;
+}
+
+@keyframes ytrag-blink {
+  50% { opacity: 0; }
+}
+
+.ytrag-citations {
+  align-self: flex-start;
+  max-width: 88%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: -4px;
+}
+
+.ytrag-citation {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #8b92a5;
+  background: #161920;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.ytrag-citation:hover {
+  border-color: #ff4b4b;
+  color: #f0f2f7;
+}
+
+.ytrag-citation-badge {
+  background: #ff4b4b;
+  color: white;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.ytrag-citation-time {
+  font-family: monospace;
+  flex-shrink: 0;
+}
+
+/* ── Input area ─────────────────────────────────────────── */
+
+.ytrag-input-row {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  flex-shrink: 0;
+}
+
+.ytrag-input {
+  flex: 1;
+  background: #1e2230;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  color: #f0f2f7;
+  font-size: 13px;
+  padding: 9px 11px;
+  font-family: inherit;
+  resize: none;
+  max-height: 80px;
+}
+
+.ytrag-input:focus {
+  outline: none;
+  border-color: #ff4b4b;
+}
+
+.ytrag-input::placeholder { color: #5a6070; }
+
+.ytrag-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ytrag-send-btn {
+  background: #ff4b4b;
+  border: none;
+  border-radius: 8px;
+  color: white;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+}
+
+.ytrag-send-btn:hover { background: #ff6b6b; }
+.ytrag-send-btn:disabled {
+  background: #2a2e3a;
+  cursor: not-allowed;
+}
+
+/* ── Reopen launcher (shown when panel is hidden) ──────────── */
+
+#ytrag-launcher {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #ff4b4b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2147483600;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  color: white;
+  font-size: 20px;
+}
+
+#ytrag-launcher.ytrag-hidden {
+  display: none;
+}

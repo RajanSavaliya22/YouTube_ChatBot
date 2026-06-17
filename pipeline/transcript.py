@@ -260,8 +260,8 @@ def fetch_youtube_transcript_api(
 
         # v1.0+ fetch() returns a FetchedTranscript object with a `.snippets`
         # list of FetchedTranscriptSnippet objects (attribute access, not dict keys)
-        fetched = transcript.fetch()
-        segments = [
+            fetched = _fetch_with_retry(transcript)        
+            segments = [
             TranscriptSegment(
                 start=float(snippet.start),
                 end=float(snippet.start) + float(snippet.duration or 3.0),
@@ -281,7 +281,19 @@ def fetch_youtube_transcript_api(
         logger.warning(f"youtube-transcript-api failed: {e}")
         return None
 
+    import time
 
+    def _fetch_with_retry(transcript, max_retries=3, base_delay=2):
+        for attempt in range(max_retries):
+            try:
+                return transcript.fetch()
+            except Exception as e:
+                if "429" in str(e) and attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"429 rate limit — retrying in {delay}s (attempt {attempt+1}/{max_retries})")
+                    time.sleep(delay)
+                else:
+                    raise
 # ─────────────────────────────────────────────
 # Strategy 2: yt-dlp captions (local fallback)
 # ─────────────────────────────────────────────

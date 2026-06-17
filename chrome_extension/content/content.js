@@ -1,23 +1,36 @@
 /**
  * Content Script
  * ===============
- * Stage: Step 2 — Video detection + SPA navigation handling.
+ * Stage: Step 5 — Wires the chat panel (panel.js) to video detection,
+ * the background worker's indexing status, and the RAG query API.
  *
- * YouTube is a Single Page App — clicking a new video does NOT trigger a
- * full page reload. The URL changes via the History API, and YouTube fires
- * a custom event `yt-navigate-finish` when navigation completes.
+ * Responsibilities carried over from earlier steps:
+ *   - Detect YouTube SPA navigation and extract video_id (Step 2)
+ *   - Relay VIDEO_CHANGED to background.js, which triggers indexing (Step 4)
+ *   - Relay INDEX_STATUS updates from background.js into the panel UI
  *
- * Strategy:
- *   1. Listen for `yt-navigate-finish` (YouTube's own event — most reliable)
- *   2. Fallback: MutationObserver on document.title (catches edge cases)
- *   3. Extract video_id from the URL on every navigation
- *   4. Only fire onVideoChanged() when the video_id actually changes
- *      (avoids re-triggering on query param changes like `&t=123s`)
+ * New in this step:
+ *   - Inject the chat panel on script load
+ *   - Reset the panel's message thread whenever the video changes
+ *   - Wire panel.onSend() to call POST /query/stream on the API and
+ *     stream tokens into the assistant bubble in real time
+ *   - Wire panel.trySeek() to seek the YouTube <video> element when a
+ *     citation timestamp is clicked, instead of opening a new tab
  */
 
 console.log("[YT-RAG] Content script injected on:", window.location.href);
 
 let currentVideoId = null;
+
+const DEFAULT_SETTINGS = {
+  apiUrl: "https://youtube-rag-api-6xhe.onrender.com",
+  apiKey: "",
+  autoIndex: true,
+};
+
+async function getSettings() {
+  return chrome.storage.sync.get(DEFAULT_SETTINGS);
+}
 
 /**
  * Extract the YouTube video ID from a URL.
@@ -39,22 +52,23 @@ function extractVideoId(url) {
 
 /**
  * Called whenever the video actually changes (not on every navigation event).
- * This is the hook point for Step 4 (triggering indexing) and Step 5 (panel injection).
  */
 function onVideoChanged(videoId, url) {
   console.log("[YT-RAG] Video changed →", videoId, "|", url);
 
-  // Notify the background service worker so it can trigger indexing (Step 4)
+  // Reset the chat panel for the new video before indexing starts,
+  // so old messages/citations from the previous video don't linger.
+  if (window.YTRagPanel) {
+    window.YTRagPanel.resetForNewVideo();
+  }
+
   chrome.runtime.sendMessage({
     type: "VIDEO_CHANGED",
     videoId: videoId,
     url: url,
   }).catch((err) => {
-    // Background worker may not be listening yet — safe to ignore during early steps
-    console.debug("[YT-RAG] sendMessage failed (expected until Step 4):", err.message);
+    console.debug("[YT-RAG] sendMessage failed:", err.message);
   });
-
-  // Panel injection/update will be added in Step 5
 }
 
 /**
@@ -64,10 +78,7 @@ function checkForVideoChange() {
   const url = window.location.href;
   const videoId = extractVideoId(url);
 
-  if (!videoId) {
-    // Not a watch page (e.g. homepage, search results) — nothing to do
-    return;
-  }
+  if (!videoId) return; // Not a watch page
 
   if (videoId !== currentVideoId) {
     currentVideoId = videoId;
@@ -75,17 +86,12 @@ function checkForVideoChange() {
   }
 }
 
-// ── Primary detection: YouTube's own SPA navigation event ─────
-// Fired by YouTube's router after a client-side navigation completes.
-// This is the most reliable signal — fires exactly once per navigation.
+// ── SPA navigation detection ──────────────────────────────────
+
 document.addEventListener("yt-navigate-finish", () => {
   checkForVideoChange();
 });
 
-// ── Fallback detection: MutationObserver on <title> ────────────
-// YouTube updates document.title almost immediately after a video change,
-// even slightly before yt-navigate-finish in some cases. Acts as a safety
-// net in case the custom event doesn't fire (e.g. very fast back/forward nav).
 const titleObserver = new MutationObserver(() => {
   checkForVideoChange();
 });
@@ -99,19 +105,164 @@ if (titleElement) {
   });
 }
 
-// ── Initial check on script injection ──────────────────────────
-// Handles the case where the content script loads directly on a watch page
-// (e.g. user pastes a YouTube URL or opens a link in a new tab).
-checkForVideoChange();
+// ── Indexing status relay → panel UI ───────────────────────────
 
-// ── Temporary: log indexing status updates from background.js ──
-// Step 5 will replace this with actual chat panel UI updates.
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "INDEX_STATUS") {
-    console.log(
-      `[YT-RAG] Index status: ${message.status}`,
-      message.step ? `(step: ${message.step})` : "",
-      message
-    );
+    console.log(`[YT-RAG] Index status: ${message.status}`, message);
+    if (window.YTRagPanel) {
+      window.YTRagPanel.setIndexStatus(message.status, message);
+    }
   }
 });
+
+// ── Query streaming ─────────────────────────────────────────────
+
+/**
+ * Send a question to the API and stream the answer into the panel.
+ * Uses fetch + ReadableStream to consume Server-Sent Events manually
+ * (EventSource doesn't support POST bodies, so we parse SSE by hand).
+ */
+async function sendQuestion(question) {
+  const settings = await getSettings();
+  const panel = window.YTRagPanel;
+
+  panel.addUserMessage(question);
+  panel.clearInput();
+  panel.setInputEnabled(false);
+
+  const assistantEl = panel.addStreamingAssistantMessage();
+
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (settings.apiKey) headers["X-Api-Key"] = settings.apiKey;
+
+    const response = await fetch(`${settings.apiUrl}/query/stream`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        question: question,
+        video_id: currentVideoId,
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE events are separated by double newlines: "data: {...}\n\n"
+      const events = buffer.split("\n\n");
+      buffer = events.pop(); // last chunk may be incomplete — keep for next read
+
+      for (const rawEvent of events) {
+        const line = rawEvent.trim();
+        if (!line.startsWith("data:")) continue;
+
+        const jsonStr = line.slice(5).trim();
+        let evt;
+        try {
+          evt = JSON.parse(jsonStr);
+        } catch (e) {
+          console.warn("[YT-RAG] Failed to parse SSE event:", jsonStr);
+          continue;
+        }
+
+        handleStreamEvent(evt, assistantEl, panel);
+      }
+    }
+
+    panel.finalizeAssistantMessage(assistantEl);
+  } catch (err) {
+    console.error("[YT-RAG] Query failed:", err);
+    panel.finalizeAssistantMessage(assistantEl);
+    if (!assistantEl.textContent) {
+      assistantEl.remove();
+    }
+    panel.addErrorMessage("Something went wrong — please try again.");
+  } finally {
+    panel.setInputEnabled(true);
+  }
+}
+
+function handleStreamEvent(evt, assistantEl, panel) {
+  switch (evt.type) {
+    case "token":
+      panel.appendToken(assistantEl, evt.content);
+      break;
+    case "citation":
+      panel.addCitations(evt.citations);
+      break;
+    case "done":
+      // Nothing extra needed — finalize happens after the stream ends
+      break;
+    case "error":
+      panel.addErrorMessage(evt.detail || "An error occurred.");
+      break;
+    default:
+      console.debug("[YT-RAG] Unknown SSE event type:", evt.type);
+  }
+}
+
+// ── Video seek for citations ────────────────────────────────────
+
+/**
+ * Attempt to seek the currently-playing YouTube video to the timestamp
+ * encoded in a citation URL, instead of opening a new tab.
+ *
+ * Returns true if the seek was handled (caller should preventDefault),
+ * false if the link should be opened normally (e.g. citation refers to
+ * a different video than the one currently playing).
+ */
+function trySeekToCitation(url) {
+  try {
+    const citedVideoId = extractVideoId(url);
+    if (citedVideoId !== currentVideoId) {
+      return false; // Different video — let the link open normally
+    }
+
+    const tMatch = url.match(/[?&]t=(\d+)/);
+    if (!tMatch) return false;
+
+    const seconds = parseInt(tMatch[1], 10);
+    const video = document.querySelector("video");
+    if (!video) return false;
+
+    video.currentTime = seconds;
+    if (video.paused) video.play().catch(() => {});
+
+    console.log("[YT-RAG] Seeked to", seconds, "seconds");
+    return true;
+  } catch (err) {
+    console.warn("[YT-RAG] Seek failed:", err);
+    return false;
+  }
+}
+
+// ── Initialization ──────────────────────────────────────────────
+
+function init() {
+  if (!window.YTRagPanel) {
+    // panel.js failed to load or hasn't run yet — retry shortly
+    setTimeout(init, 200);
+    return;
+  }
+
+  window.YTRagPanel.inject();
+  window.YTRagPanel.onSend = sendQuestion;
+  window.YTRagPanel.trySeek = trySeekToCitation;
+
+  // Initial check in case the script loads directly on a watch page
+  checkForVideoChange();
+}
+
+init();
