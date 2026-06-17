@@ -55,6 +55,67 @@ function notifyTab(tabId, payload) {
   });
 }
 
+// ── Health pre-check (cold start mitigation) ────────────────────
+
+const HEALTH_CHECK_TIMEOUT_MS = 60 * 1000;   // Render free-tier cold start can take ~30-60s
+const HEALTH_CHECK_RETRY_MS = 3000;
+
+/**
+ * Ping /health and wait for a real response before calling /index.
+ *
+ * Render free tier spins down after inactivity. If /index is called on a
+ * sleeping instance, the cold-start delay can overlap with FastAPI's own
+ * startup (model loading, Qdrant/Redis connection setup), occasionally
+ * causing the indexing request to race ahead of the server being fully
+ * ready — or causing the extension/Chrome to retry the request before the
+ * first one completes, leading to duplicate indexing jobs for the same
+ * video.
+ *
+ * Hitting the lightweight /health endpoint first absorbs the cold-start
+ * delay on a cheap request, so by the time /index is called the server
+ * is already warm and ready.
+ *
+ * Retries every HEALTH_CHECK_RETRY_MS until it gets any HTTP response
+ * (even a non-200 counts as "server is awake") or until the overall
+ * timeout is hit.
+ */
+async function waitForServerReady(apiUrl, apiKey, tabId, videoId) {
+  const deadline = Date.now() + HEALTH_CHECK_TIMEOUT_MS;
+  let attempt = 0;
+
+  while (Date.now() < deadline) {
+    attempt += 1;
+    try {
+      const res = await fetch(`${apiUrl}/health`, {
+        method: "GET",
+        headers: buildHeaders(apiKey),
+      });
+      // Any response — even a 4xx/5xx — means the server process is up
+      // and responding, which is all we need before calling /index.
+      if (res) {
+        console.log(
+          `[YT-RAG][background] Server ready (attempt ${attempt}, status ${res.status})`
+        );
+        return true;
+      }
+    } catch (err) {
+      // Network error / timeout — server likely still cold-starting.
+      console.log(
+        `[YT-RAG][background] Waiting for server to wake (attempt ${attempt}):`,
+        err.message
+      );
+      if (attempt === 1) {
+        // Only surface this on the first attempt so the panel shows
+        // something meaningful without spamming repeated "starting" states.
+        notifyTab(tabId, { status: "starting", videoId, step: "waking server" });
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, HEALTH_CHECK_RETRY_MS));
+  }
+
+  return false; // Gave up after timeout — caller decides how to handle this
+}
+
 // ── Core indexing flow ───────────────────────────────────────
 
 async function startIndexing(tabId, videoId, videoUrl) {
@@ -76,6 +137,18 @@ async function startIndexing(tabId, videoId, videoUrl) {
   clearTabPoll(tabId);
 
   notifyTab(tabId, { status: "starting", videoId });
+
+  // Wake the server on a cheap endpoint first — see waitForServerReady() docs.
+  const ready = await waitForServerReady(settings.apiUrl, settings.apiKey, tabId, videoId);
+  if (!ready) {
+    console.error("[YT-RAG][background] Server did not respond within timeout.");
+    notifyTab(tabId, {
+      status: "error",
+      videoId,
+      error: "Server did not respond. It may be starting up — try again in a moment.",
+    });
+    return;
+  }
 
   try {
     const res = await fetch(`${settings.apiUrl}/index`, {

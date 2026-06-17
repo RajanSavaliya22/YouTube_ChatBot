@@ -66,7 +66,9 @@ class CacheManager:
             return result
 
         # L2 — Semantic match (Redis GET index + cosine similarity scan)
-        result = semantic_cache.get(query_vector)
+        # filter_kwargs (video_id, channel) scopes the match so the same
+        # question asked about different videos doesn't collide.
+        result = semantic_cache.get(query_vector, **filter_kwargs)
         if result is not None:
             logger.info(f"Cache HIT  [L2-Semantic] '{query[:60]}'")
             # Promote to L1 so next identical query is O(1)
@@ -88,7 +90,7 @@ class CacheManager:
         Called after a successful pipeline run.
         """
         exact_cache.set(query, answer, **filter_kwargs)
-        semantic_cache.set(query, query_vector, answer)
+        semantic_cache.set(query, query_vector, answer, **filter_kwargs)
         logger.debug(f"Cache SET  [L1+L2]      '{query[:60]}'")
 
     def invalidate_query(self, query: str, **filter_kwargs) -> None:

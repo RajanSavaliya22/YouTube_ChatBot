@@ -56,14 +56,21 @@ def _save_index(r, index: list[dict]) -> None:
 
 # ── Public API ────────────────────────────────────────────────
 
-def get(query_vector: list[float]) -> Any | None:
+def get(query_vector: list[float], **filter_kwargs) -> Any | None:
     """
-    Check if any cached query is semantically similar to this query vector.
+    Check if any cached query is semantically similar to this query vector,
+    restricted to entries with matching filters (e.g. same video_id/channel).
+
+    Without filter matching, two different videos asked the same general
+    question ("what is this video about?") would collide — the embedding
+    of the question text is nearly identical regardless of which video it
+    refers to, so the filter check is what keeps answers scoped correctly.
 
     Steps:
-      1. Load the in-Redis index of (entry_key, vector) pairs
-      2. Compute cosine similarity between query_vector and each cached vector
-      3. If best match ≥ threshold, fetch and return its cached answer
+      1. Load the in-Redis index of (entry_key, vector, filters) tuples
+      2. Discard entries whose filters don't match this request
+      3. Compute cosine similarity between query_vector and each remaining vector
+      4. If best match ≥ threshold, fetch and return its cached answer
 
     Returns deserialized answer dict, or None on miss.
     """
@@ -81,6 +88,13 @@ def get(query_vector: list[float]) -> Any | None:
     best_entry = None
 
     for entry in index:
+        # Skip entries scoped to a different video/channel/etc.
+        # Entries written before this fix have no "filters" key — treat
+        # missing filters as {} so old global-scope entries still compare
+        # equal only against other filter-less lookups (back-compat).
+        if entry.get("filters", {}) != filter_kwargs:
+            continue
+
         score = _cosine_similarity(query_vector, entry["vector"])
         if score > best_score:
             best_score = score
@@ -90,24 +104,30 @@ def get(query_vector: list[float]) -> Any | None:
         answer_raw = r.get(best_entry["key"])
         if answer_raw:
             logger.debug(
-                f"L2 HIT:  sim={best_score:.4f} matched='{best_entry['query'][:50]}'"
+                f"L2 HIT:  sim={best_score:.4f} filters={filter_kwargs} "
+                f"matched='{best_entry['query'][:50]}'"
             )
             # Refresh TTL on hit (promotes hot entries)
             r.expire(best_entry["key"], CACHE.semantic_ttl)
             return json.loads(answer_raw)
 
-    logger.debug(f"L2 MISS: best_sim={best_score:.4f} (threshold={CACHE.semantic_threshold})")
+    logger.debug(
+        f"L2 MISS: best_sim={best_score:.4f} filters={filter_kwargs} "
+        f"(threshold={CACHE.semantic_threshold})"
+    )
     return None
 
 
-def set(query: str, query_vector: list[float], answer: Any) -> None:
+def set(query: str, query_vector: list[float], answer: Any, **filter_kwargs) -> None:
     """
-    Store an answer in the semantic cache.
+    Store an answer in the semantic cache, scoped to the given filters
+    (e.g. video_id/channel) so it can only be matched by future lookups
+    with the same filters.
 
     Steps:
       1. Generate a unique key for this entry
       2. Store the answer JSON under that key with TTL
-      3. Append (key, vector, query) to the index
+      3. Append (key, vector, query, filters) to the index
       4. Evict oldest entry if index exceeds max_entries
     """
     if not CACHE.enabled:
@@ -131,10 +151,11 @@ def set(query: str, query_vector: list[float], answer: Any) -> None:
         "key": entry_key,
         "vector": query_vector,
         "query": query[:100],   # Store truncated query for debug logging only
+        "filters": filter_kwargs,
     })
     _save_index(r, index)
 
-    logger.debug(f"L2 SET:  '{query[:60]}' (index_size={len(index)})")
+    logger.debug(f"L2 SET:  '{query[:60]}' filters={filter_kwargs} (index_size={len(index)})")
 
 
 def get_stats(r=None) -> dict:

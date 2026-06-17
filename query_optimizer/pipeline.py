@@ -175,7 +175,6 @@ def _embed_all(queries: list[str]) -> list[list[float]]:
     from config import EMBEDDING
     prefixed = [f"{EMBEDDING.query_prefix}{q}" for q in queries]
 
-    from sentence_transformers import SentenceTransformer
     from utils.embedder import get_model
     model = get_model()
     embeddings = model.encode(
