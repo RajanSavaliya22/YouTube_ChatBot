@@ -277,3 +277,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearTabPoll(tabId);
 });
+
+// ── Keyboard shortcut (Alt+Y by default, user-configurable) ───────
+//
+// chrome.commands fires in the background worker, not the page itself,
+// so we relay it to the active tab's content script, which calls
+// window.YTRagPanel.toggleHidden() to show/hide the floating panel.
+
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== "toggle-panel") return;
+
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!activeTab?.id) return;
+
+  chrome.tabs.sendMessage(activeTab.id, { type: "TOGGLE_PANEL" }).catch((err) => {
+    // Content script may not be injected on this tab (e.g. not a YouTube
+    // watch page) — safe to ignore.
+    console.debug("[YT-RAG][background] toggle-panel relay failed:", err.message);
+  });
+});

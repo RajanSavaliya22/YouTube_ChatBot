@@ -394,7 +394,7 @@ def _print_raw_results(question: str, ranked) -> None:
         if hasattr(p, "video_title"):
             print(f"#{i} rerank={r.rerank_score:.3f} (was #{r.retrieval_rank})")
             print(f"   {p.video_title} | {p.channel}")
-            print(f"   {p.timestamp_label} → {p.video_url}?t={int(p.timestamp_start)}")
+            print(f"   {p.timestamp_label} → {p.video_url}&t={int(p.timestamp_start)}")
             print(f"   {p.chunk_text[:200]}...")
         print()
 

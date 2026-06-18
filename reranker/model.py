@@ -150,7 +150,7 @@ class RankedChunk:
     @property
     def timestamp_url(self) -> str:
         p = self.payload
-        return f"{p.video_url}?t={int(p.timestamp_start)}"
+        return f"{p.video_url}&t={int(p.timestamp_start)}"
 
 
 # ── Public API ────────────────────────────────────────────────

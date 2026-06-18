@@ -38,6 +38,15 @@
     }
   },
 
+  "commands": {
+    "toggle-panel": {
+      "suggested_key": {
+        "default": "Alt+Y"
+      },
+      "description": "Show or hide the YouTube RAG chat panel"
+    }
+  },
+
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",

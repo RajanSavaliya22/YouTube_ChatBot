@@ -94,7 +94,7 @@ def build_context(
         parent_text = _truncate(p.parent_text, GENERATOR.max_chunk_tokens)
 
         # Build source header
-        ts_url = f"{p.video_url}?t={int(p.timestamp_start)}"
+        ts_url = f"{p.video_url}&t={int(p.timestamp_start)}"
         header = (
             f"[Source {i}] "
             f"Video: \"{p.video_title}\" | "
